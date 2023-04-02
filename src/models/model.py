@@ -27,15 +27,6 @@ def get_model(model_name: str, device, lr: Optional[float] = None):
     # Define output layers
     num_ftrs = model.fc.in_features
     model.fc = torch.nn.Linear(in_features=2048, out_features=200, bias=True)
-    model.cuda()
-    compiled_model = torch.compile(model)
-
-    '''model.fc = nn.Sequential(
-        nn.Linear(num_ftrs, 512),
-        nn.ReLU(),
-        nn.Linear(512, 200),
-        nn.LogSoftmax(dim=1)
-    ).to(device)'''
 
     # Define loss criterion + optimizer
     criterion =  torch.nn.CrossEntropyLoss()

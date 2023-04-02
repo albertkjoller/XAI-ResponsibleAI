@@ -5,7 +5,6 @@ import os
 from pathlib2 import Path
 import torch.nn.functional as F
 
-from torch.utils.tensorboard import SummaryWriter
 import torch
 
 import time
@@ -15,6 +14,7 @@ from src.models.model import get_model
 from src.models.utils import set_seed
 from src.data.dataloader import get_loaders, get_loaders_with_concepts
 from src.data.bottleneck_code.dataset import load_data
+from tqdm import tqdm
 import wandb
 
 # start a new wandb run to track this script
@@ -29,9 +29,8 @@ wandb.init(
     "dataset": "CUB_processed",
     "epochs": 100,
     },
-    name="ResNet50_test"
+    name="ResNet50.100epochs.lr1e-4.bz32"
 )
-
 
 #  ---------------  Training  ---------------
 def train(
@@ -45,95 +44,74 @@ def train(
     # Set seed
     set_seed(seed)
     # Tensorboard writer for logging experiments
-    writer = SummaryWriter(f"logs/{experiment_name}")
 
-    if not bottleneck_loaders:
-        # Get dataset splits
-        loaders, normalization = get_loaders(
-            data_path=datafolder_path / 'processed/CUB_200_2011' / datafile_name,
-            batch_size=batch_size,
-            shuffle=True,
-            num_workers=num_workers,
-        )
-    else:
-        loaders, normalization = get_loaders_with_concepts(
-            data_folder=datafolder_path,
-            batch_size=batch_size,
-        )
+    train_loader = load_data(pkl_paths=['../data/src/bottleneck_code/CUB_processed/class_attr_data_10/train.pkl'],use_attr=False,no_img=False,batch_size=batch_size, resol=224)
+
+    val_loader = load_data(pkl_paths=['../data/src/bottleneck_code/CUB_processed/class_attr_data_10/val.pkl'],use_attr=False,no_img=False,batch_size=batch_size, resol=224)
+
+    scaler = torch.cuda.amp.GradScaler()
 
     # Use gpu if available
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"INFO - using device: {device}")
 
     # Define the model, loss criterion and optimizer
-    model, criterion, optimizer, scheduler, _ = get_model(model_name, lr=lr, device=device)
-
-    print("CNN Architecture:")
-    print(model)
+    model, loss_fn, optimizer, scheduler, _ = get_model(model_name, lr=lr, device=device)
+    model.cuda()
+    compiled_model = torch.compile(model)
 
     current_best_loss = torch.inf
     with trange(epochs) as t:
         for epoch in t:
-            running_loss_train, running_loss_val    = 0.0, 0.0
-            running_acc_train,  running_acc_val     = 0.0, 0.0
+            model.train()
+            train_loss = 0
+            train_acc = 0
+            val_loss = 0
+            val_acc = 0
 
-            for batch in iter(loaders['train']):
-                # Extract data
-                if bottleneck_loaders:
-                    inputs, labels, concepts = batch
-                    inputs, labels, concepts = inputs.to(device), labels.to(device), torch.stack(concepts).T.to(device)
-                else:
-                    inputs, labels = batch['image'].to(device), batch['label'].to(device)
-
-                if model_name == 'Inception3' and not bottleneck_loaders:
-                    # Resize the input tensor to a larger size
-                    inputs = F.interpolate(inputs, size=(299, 299), mode='bilinear', align_corners=True)
-
+            for images, labels in tqdm(train_loader):
+                image_b = images.cuda(non_blocking=True)
+                label = labels.cuda(non_blocking=True)
                 # Zero the parameter gradients
                 optimizer.zero_grad()
-                model.to(device)
+                
+                with torch.cuda.amp.autocast():
+                    output = compiled_model(image_b)
+                    loss = loss_fn(output,label)
+                    
+                scaler.scale(loss).backward()
+                scaler.step(optimizer)
+                scaler.update()
+                
+                train_loss += loss.detach()
+                train_acc += sum(output.softmax(dim=1).argmax(dim=1) == label)
+            
+            train_loss = train_loss/len(train_loader)
+            train_acc = train_acc/len(train_loader.dataset)
+            
+            model.eval()
+            for images, labels in tqdm(val_loader):
+                image_b = images.cuda(non_blocking=True)
+                label = labels.cuda(non_blocking=True)
 
-                # Forward + backward
-                outputs = model(inputs).logits if model_name == 'Inception3' else model(inputs)
-
-                loss = criterion(outputs, labels)
-                running_loss_train += loss.item()
-                loss.backward()
-                # Optimize
-                optimizer.step()
-                scheduler.step()
-
-                # Get predictions from log-softmax scores
-                preds = torch.exp(outputs.detach()).topk(1)[1]
-                # Store accuracy
-                equals = preds.flatten() == labels
-                running_acc_train += torch.mean(equals.type(torch.FloatTensor))
-
-            # Validation
-            with torch.no_grad():
-                for batch in iter(loaders['validation']):
-                    # Extract data
-                    if bottleneck_loaders:
-                        inputs, labels, concepts = batch
-                        inputs, labels, concepts = inputs.to(device), labels.to(device), torch.stack(concepts).T.to(device)
-                    else:
-                        inputs, labels = batch['image'].to(device), batch['label'].to(device)
-
-                    if model_name == 'Inception3' and not bottleneck_loaders:
-                        # Resize the input tensor to a larger size
-                        inputs = F.interpolate(inputs, size=(299, 299), mode='bilinear', align_corners=True)
-
-                    # Forward + backward
-                    outputs = model(inputs).logits if model_name == 'Inception3' else model(inputs)
-                    preds = torch.exp(outputs).topk(1)[1]
-
-                    # Compute loss and accuracy
-                    running_loss_val += criterion(outputs, labels)
-                    equals = preds.flatten() == labels
-                    running_acc_val += torch.mean(equals.type(torch.FloatTensor))
-
-            if running_loss_val / len(loaders['validation']) < current_best_loss:
-                current_best_loss = running_loss_val / len(loaders['validation'])
+                with torch.no_grad():
+                    with torch.cuda.amp.autocast():
+                        output = compiled_model(image_b)
+                        loss = loss_fn(output,label)
+                        
+                    val_loss += loss.detach()
+                    val_acc += sum(output.softmax(dim=1).argmax(dim=1) == label)
+                    
+            val_loss = val_loss/len(val_loader)
+            val_acc = val_acc/len(val_loader.dataset)
+            
+            wandb.log({"Epoch":epoch, "val/acc": val_acc, "val/loss": val_loss, "train/acc": train_acc, "train/loss": train_loss})
+            
+            scheduler.step(val_loss)
+            
+            
+            if val_loss < current_best_loss:
+                current_best_loss = val_loss
                 # Create and save checkpoint
                 checkpoint = {
                     "experiment_name": experiment_name,
@@ -151,11 +129,7 @@ def train(
                     },
                     "data": {
                         "bottleneck_loader": bottleneck_loaders,
-                        "filename": datafile_name,
-                        "normalization": {
-                            "mu": list(normalization['mean'].numpy()),
-                            "sigma": list(normalization['std'].numpy()),
-                        },
+                        "filename": datafile_name
                     },
                     "best_epoch": epoch + 1,
                     "state_dict": model.state_dict(),
@@ -166,25 +140,20 @@ def train(
 
             # Update progress bar
             train_loss_descr = (
-                f"Train loss: {running_loss_train / len(loaders['train']):.3f}"
+                f"Train loss: {train_loss:.3f}"
             )
             val_loss_descr = (
-                f"Validation loss: {running_loss_val / len(loaders['validation']):.3f}"
+                f"Validation loss: {val_loss:.3f}"
             )
             train_acc_descr = (
-                f"Train accuracy: {running_acc_train / len(loaders['train']):.3f}"
+                f"Train accuracy: {train_acc:.3f}"
             )
             val_acc_descr = (
-                f"Validation accuracy: {running_acc_val / len(loaders['validation']):.3f}"
+                f"Validation accuracy: {val_acc:.3f}"
             )
             t.set_description(
                 f"EPOCH [{epoch + 1}/{epochs}] --> {train_loss_descr} | {val_loss_descr} | {train_acc_descr} | {val_acc_descr} | Progress: "
             )
-
-            writer.add_scalar('loss/train', running_loss_train / len(loaders['train']), epoch)
-            writer.add_scalar('accuracy/train', running_acc_train / len(loaders['train']), epoch)
-            writer.add_scalar('loss/validation', running_loss_val / len(loaders['validation']), epoch)
-            writer.add_scalar('accuracy/validation', running_acc_val / len(loaders['validation']), epoch)
 
 if __name__ == '__main__':
 
