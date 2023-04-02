@@ -1,5 +1,5 @@
 #!/usr/bin/python
-# 
+#
 
 import os
 from pathlib2 import Path
@@ -20,11 +20,11 @@ from src.data.bottleneck_code.dataset import load_data
 def train(
         datafolder_path: str, datafile_name: str, bottleneck_loaders: bool,
         model_name: str,
-        batch_size: int = 128, num_workers: int = 1, lr=1e-4, epochs: int = 100, 
-        experiment_name: str = str(int(round(time.time()))), save_path: str = '', 
+        batch_size: int = 128, num_workers: int = 1, lr=1e-4, epochs: int = 100,
+        experiment_name: str = str(int(round(time.time()))), save_path: str = '',
         seed: int = 42,
     ):
-    
+
     # Set seed
     set_seed(seed)
     # Tensorboard writer for logging experiments
@@ -34,8 +34,8 @@ def train(
         # Get dataset splits
         loaders, normalization = get_loaders(
             data_path=datafolder_path / 'processed/CUB_200_2011' / datafile_name,
-            batch_size=batch_size, 
-            shuffle=True, 
+            batch_size=batch_size,
+            shuffle=True,
             num_workers=num_workers,
         )
     else:
@@ -49,7 +49,7 @@ def train(
     print(f"INFO - using device: {device}")
 
     # Define the model, loss criterion and optimizer
-    model, criterion, optimizer, _ = get_model(model_name, lr=lr, device=device)
+    model, criterion, optimizer, scheduler, _ = get_model(model_name, lr=lr, device=device)
 
     print("CNN Architecture:")
     print(model)
@@ -61,7 +61,7 @@ def train(
             running_acc_train,  running_acc_val     = 0.0, 0.0
 
             for batch in iter(loaders['train']):
-                # Extract data                
+                # Extract data
                 if bottleneck_loaders:
                     inputs, labels, concepts = batch
                     inputs, labels, concepts = inputs.to(device), labels.to(device), torch.stack(concepts).T.to(device)
@@ -74,6 +74,8 @@ def train(
 
                 # Zero the parameter gradients
                 optimizer.zero_grad()
+                model.to(device)
+
                 # Forward + backward
                 outputs = model(inputs).logits if model_name == 'Inception3' else model(inputs)
 
@@ -82,6 +84,7 @@ def train(
                 loss.backward()
                 # Optimize
                 optimizer.step()
+                scheduler.step()
 
                 # Get predictions from log-softmax scores
                 preds = torch.exp(outputs.detach()).topk(1)[1]
@@ -92,7 +95,7 @@ def train(
             # Validation
             with torch.no_grad():
                 for batch in iter(loaders['validation']):
-                    # Extract data                
+                    # Extract data
                     if bottleneck_loaders:
                         inputs, labels, concepts = batch
                         inputs, labels, concepts = inputs.to(device), labels.to(device), torch.stack(concepts).T.to(device)
@@ -180,9 +183,9 @@ if __name__ == '__main__':
         datafile_name='',
         bottleneck_loaders=True,
         model_name='Inception3',
-        batch_size=64,
-        epochs=50,
-        lr=1e-4,
-        experiment_name='Inception3.50epochs.lr1e-4.bz64',
+        batch_size=32,
+        epochs=100,
+        lr=0.0045,
+        experiment_name='Inception3.100epochs.lr0.0045.bz32',
         save_path=save_path,
     )

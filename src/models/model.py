@@ -3,21 +3,22 @@ from typing import Tuple, Optional
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision.models import resnet18, resnet50, inception_v3
-from torchvision.models import ResNet18_Weights, ResNet50_Weights, Inception_V3_Weights
+import torchvision.models as models
+import torch.optim.lr_scheduler as lr_scheduler
 
 def get_model(model_name: str, device, lr: Optional[float] = None):
     if model_name not in ['ResNet18', 'ResNet50', 'Inception3']:
         raise NotImplementedError(f"No such model class exists... {(model_name)}")
 
     if model_name == 'ResNet50':
-        model = resnet50(weights=ResNet50_Weights.DEFAULT).to(device)
-    
+        model = models.resnet50(pretrained=True)
+
     elif model_name == 'ResNet18':
-        model = resnet18(weights=ResNet18_Weights.DEFAULT).to(device)
+        model = models.resnet18(pretrained=True)
 
     elif model_name == 'Inception3':
-        model = inception_v3(weights=Inception_V3_Weights.DEFAULT).to(device)
+        model = models.inception_v3(pretrained=True)
+
 
     # Freeze weights
     for param in model.parameters():
@@ -35,9 +36,10 @@ def get_model(model_name: str, device, lr: Optional[float] = None):
     # Define loss criterion + optimizer --> NLLLoss used with LogSoftmax for stability reasons
     criterion = nn.NLLLoss()
 
-    if lr is not None: # For training mode
+    if model_name == 'Inception3':
+        optimizer = torch.optim.RMSprop(model.parameters(), lr=lr, alpha=0.99, eps=1e-8, momentum=0.9)
+    else:
         optimizer = optim.Adam(model.parameters(), lr=lr)
-        return model, criterion, optimizer, num_ftrs
-    
-    else: # For test mode
-        return model, criterion, None, num_ftrs
+
+    scheduler = lr_scheduler.StepLR(optimizer, step_size=4, gamma=0.94)
+    return model, criterion, optimizer, scheduler, num_ftrs
