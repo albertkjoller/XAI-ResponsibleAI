@@ -15,6 +15,23 @@ from src.models.model import get_model
 from src.models.utils import set_seed
 from src.data.dataloader import get_loaders, get_loaders_with_concepts
 from src.data.bottleneck_code.dataset import load_data
+import wandb
+
+# start a new wandb run to track this script
+wandb.init(
+    # set the wandb project where this run will be logged
+    project="XAI",
+    
+    # track hyperparameters and run metadata
+    config={
+    "learning_rate": 1e-4,
+    "architecture": "ResNet50",
+    "dataset": "CUB_processed",
+    "epochs": 100,
+    },
+    name="ResNet50_test"
+)
+
 
 #  ---------------  Training  ---------------
 def train(
@@ -182,10 +199,10 @@ if __name__ == '__main__':
         # datafile_name='03-24-2023-processed_data_224x224.pth',
         datafile_name='',
         bottleneck_loaders=True,
-        model_name='Inception3',
+        model_name='ResNet50',
         batch_size=32,
         epochs=100,
-        lr=0.0045,
-        experiment_name='Inception3.100epochs.lr0.0045.bz32',
+        lr=1e-4,
+        experiment_name='ResNet50.100epochs.lr1e-4.bz32',
         save_path=save_path,
     )

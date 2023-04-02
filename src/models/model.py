@@ -11,7 +11,7 @@ def get_model(model_name: str, device, lr: Optional[float] = None):
         raise NotImplementedError(f"No such model class exists... {(model_name)}")
 
     if model_name == 'ResNet50':
-        model = models.resnet50(pretrained=True)
+        models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
 
     elif model_name == 'ResNet18':
         model = models.resnet18(pretrained=True)
@@ -26,20 +26,21 @@ def get_model(model_name: str, device, lr: Optional[float] = None):
 
     # Define output layers
     num_ftrs = model.fc.in_features
-    model.fc = nn.Sequential(
+    model.fc = torch.nn.Linear(in_features=2048, out_features=200, bias=True)
+    model.cuda()
+    compiled_model = torch.compile(model)
+
+    '''model.fc = nn.Sequential(
         nn.Linear(num_ftrs, 512),
         nn.ReLU(),
         nn.Linear(512, 200),
         nn.LogSoftmax(dim=1)
-    ).to(device)
+    ).to(device)'''
 
-    # Define loss criterion + optimizer --> NLLLoss used with LogSoftmax for stability reasons
-    criterion = nn.NLLLoss()
+    # Define loss criterion + optimizer
+    criterion =  torch.nn.CrossEntropyLoss()
 
-    if model_name == 'Inception3':
-        optimizer = torch.optim.RMSprop(model.parameters(), lr=lr, alpha=0.99, eps=1e-8, momentum=0.9)
-    else:
-        optimizer = optim.Adam(model.parameters(), lr=lr)
+    optimizer = torch.optim.Adam(model.parameters(),lr=lr)
 
-    scheduler = lr_scheduler.StepLR(optimizer, step_size=4, gamma=0.94)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min')
     return model, criterion, optimizer, scheduler, num_ftrs
